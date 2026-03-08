@@ -2,6 +2,8 @@
 
 Transmit and receive OOK (on-off keying) signals to control ceiling fans at 433 MHz using a software-defined radio (BladeRF, HackRF, or any SoapySDR-compatible device).
 
+Compatible with a FT0317A controllers.
+
 ## Binaries
 
 ## fan-tx
@@ -58,9 +60,9 @@ cargo run --release --bin fan-tx -- --http-server 0.0.0.0:8080
 | `--repeat` | 2 | Times to repeat each command |
 | `--http-server` | — | Start HTTP server on IP:PORT |
 
-**Available commands (Vendor A):** `off`, `speed1`–`speed6`, `fan_off`, `toggle_light`, `forward`, `reverse`, `waves`, `1h`, `4h`, `8h`
+**Available commands (Vendor A):** `off`, `speed1`–`speed6`, `fan_off`, `toggle_light`, `forward`, `reverse`, `breeze`, `1h`, `4h`, `8h`
 
-**Available commands (Vendor B):** `off`, `speed1`–`speed6`, `fan_off`, `toggle_light`, `direction`, `waves`, `home`, `1h`, `4h`, `8h`
+**Available commands (Vendor B):** `off`, `speed1`–`speed6`, `fan_off`, `toggle_light`, `toggle_direction`, `breeze`, `home_shield`, `1h`, `4h`, `8h`
 
 ### fan-rx
 
