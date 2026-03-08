@@ -220,6 +220,10 @@ struct Args {
     #[arg(short, long, default_value = "config.yaml")]
     config: String,
 
+    /// Number of times to repeat each command (with 1s interval)
+    #[arg(long, default_value_t = 2)]
+    repeat: usize,
+
     /// Start HTTP server on IP:PORT (e.g. 0.0.0.0:8080)
     #[arg(long)]
     http_server: Option<String>,
@@ -407,12 +411,18 @@ fn execute(
     stream: &mut soapysdr::TxStream<c32>,
     state: &mut State,
     input: &str,
+    repeat: usize,
 ) -> Result<()> {
-    let (target, button) = parse_command(input)?;
-    let fans = resolve_target(config, target)?;
-    let samples = build_samples(&fans, button, state)?;
-    transmit(stream, &samples)?;
-    state.save();
+    for i in 0..repeat {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        let (target, button) = parse_command(input)?;
+        let fans = resolve_target(config, target)?;
+        let samples = build_samples(&fans, button, state)?;
+        transmit(stream, &samples)?;
+        state.save();
+    }
     Ok(())
 }
 
@@ -435,6 +445,7 @@ fn run_http_server(
     config: &LoadedConfig,
     stream: &mut soapysdr::TxStream<c32>,
     state: &mut State,
+    repeat: usize,
 ) -> Result<()> {
     let server = tiny_http::Server::http(addr)
         .map_err(|e| anyhow::anyhow!("Failed to start HTTP server: {e}"))?;
@@ -450,7 +461,7 @@ fn run_http_server(
                 match (params.get("target"), params.get("cmd")) {
                     (Some(target), Some(cmd)) => {
                         let input = format!("{target} {cmd}");
-                        match execute(config, stream, state, &input) {
+                        match execute(config, stream, state, &input, repeat) {
                             Ok(()) => (200, format!("OK: {input}")),
                             Err(e) => (400, format!("Error: {e}")),
                         }
@@ -479,10 +490,10 @@ fn main() -> Result<()> {
     let mut state = State::load();
 
     if let Some(addr) = &args.http_server {
-        run_http_server(addr, &config, &mut stream, &mut state)?;
+        run_http_server(addr, &config, &mut stream, &mut state, args.repeat)?;
     } else if let (Some(target), Some(button)) = (&args.target, &args.button) {
         let cmd = format!("{target} {button}");
-        execute(&config, &mut stream, &mut state, &cmd)?;
+        execute(&config, &mut stream, &mut state, &cmd, args.repeat)?;
     } else if args.target.is_some() {
         bail!("Both target and button are required (e.g. fan-tx '*' off)");
     } else {
@@ -495,7 +506,7 @@ fn main() -> Result<()> {
             if line.is_empty() {
                 continue;
             }
-            if let Err(e) = execute(&config, &mut stream, &mut state, line) {
+            if let Err(e) = execute(&config, &mut stream, &mut state, line, args.repeat) {
                 eprintln!("Error: {e}");
             }
         }
