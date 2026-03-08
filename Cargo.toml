@@ -1,0 +1,22 @@
+[package]
+name = "fan-controller"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "fan-rx"
+path = "src/rx.rs"
+
+[[bin]]
+name = "fan-tx"
+path = "src/tx.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+num = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+soapysdr = "0.4"
+tiny_http = "0.12"

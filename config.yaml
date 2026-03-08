@@ -1,0 +1,12 @@
+fans:
+  - { name: palapa1, vendor: vendor_a, device_id: 0x87552 }
+  - { name: palapa2, vendor: vendor_a, device_id: 0x861A6 }
+  - { name: palapa3, vendor: vendor_a, device_id: 0x86274 }
+  - { name: galleria1, vendor: vendor_b, device_id: 0xED13F }
+  - { name: galleria2, vendor: vendor_a, device_id: 0x87AD7 }
+  - { name: galleria3, vendor: vendor_a, device_id: 0x8643E }
+
+rooms:
+  main: "*"
+  palapa: "palapa*"
+  galleria: "galleria*"
