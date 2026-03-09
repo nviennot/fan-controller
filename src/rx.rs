@@ -160,7 +160,8 @@ impl OokDecoder {
         }
         self.last_code = Some(code as u32);
 
-        println!("0x{code:08X}  ({n_bits} bits)");
+        let device_id = code >> 12;
+        println!("0x{code:08X}  device_id=0x{device_id:05X}");
     }
 }
 
