@@ -1,11 +1,17 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use num::complex::Complex32 as c32;
+use rmcp::{
+    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
+    model::{CallToolResult, Content, ServerCapabilities, ServerInfo},
+    schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt,
+};
 use serde::{Deserialize, Serialize};
 use soapysdr::{Device, Direction};
 use std::f32::consts::TAU;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 // Fan remote OOK protocol at 433.816 MHz
 // Code format: [device_id:20][button_hi:4][rolling:4][check:4]
@@ -224,9 +230,9 @@ struct Args {
     #[arg(long, default_value_t = 2)]
     repeat: usize,
 
-    /// Start HTTP server on IP:PORT (e.g. 0.0.0.0:8080)
+    /// Start MCP server over stdio
     #[arg(long)]
-    http_server: Option<String>,
+    mcp: bool,
 }
 
 fn parse_command(s: &str) -> Result<(&str, &str)> {
@@ -355,7 +361,7 @@ fn build_samples(fans: &[&Fan], button_name: &str, state: &mut State) -> Result<
         };
         let code = make_code(fan, button, counter);
         let offset_hz = (fan.frequency - CENTER_FREQUENCY) as f32;
-        println!("{} {button_name}", fan.name);
+        eprintln!("{} {button_name}", fan.name);
 
         samples.extend(generate_press(fan, code, REPEATS, offset_hz, &mut phase));
     }
@@ -440,57 +446,101 @@ fn targets_json(config: &LoadedConfig) -> String {
     serde_json::json!({ "fans": fans, "rooms": rooms, "commands": all_commands }).to_string()
 }
 
-fn run_http_server(
-    addr: &str,
-    config: &LoadedConfig,
-    stream: &mut soapysdr::TxStream<c32>,
-    state: &mut State,
-    repeat: usize,
-) -> Result<()> {
-    let server = tiny_http::Server::http(addr)
-        .map_err(|e| anyhow::anyhow!("Failed to start HTTP server: {e}"))?;
-    eprintln!("HTTP server listening on {addr}");
+// -- MCP server --
 
-    for request in server.incoming_requests() {
-        let (status, body) = match (request.method(), request.url()) {
-            (tiny_http::Method::Get, "/targets") => (200, targets_json(config)),
-            (tiny_http::Method::Post, url) if url.starts_with("/send?") => {
-                let query = &url["/send?".len()..];
-                let params: HashMap<&str, &str> =
-                    query.split('&').filter_map(|p| p.split_once('=')).collect();
-                match (params.get("target"), params.get("cmd")) {
-                    (Some(target), Some(cmd)) => {
-                        let input = format!("{target} {cmd}");
-                        match execute(config, stream, state, &input, repeat) {
-                            Ok(()) => (200, format!("OK: {input}")),
-                            Err(e) => (400, format!("Error: {e}")),
-                        }
-                    }
-                    _ => (400, "Missing target or cmd parameter".to_string()),
-                }
-            }
-            _ => (404, "Not found".to_string()),
-        };
-        let response = tiny_http::Response::from_string(&body)
-            .with_status_code(status)
-            .with_header(
-                "Content-Type: application/json"
-                    .parse::<tiny_http::Header>()
-                    .unwrap(),
-            );
-        let _ = request.respond(response);
-    }
-    Ok(())
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SendParams {
+    /// Target fan name, glob pattern, or room name (e.g. *, palapa1, palapa*, main)
+    target: String,
+    /// Command to send (e.g. off, speed3, toggle_light)
+    command: String,
 }
 
-fn main() -> Result<()> {
+struct FanMcp {
+    config: LoadedConfig,
+    stream: Mutex<soapysdr::TxStream<c32>>,
+    state: Mutex<State>,
+    repeat: usize,
+    tool_router: ToolRouter<Self>,
+}
+
+#[tool_router]
+impl FanMcp {
+    fn new(
+        config: LoadedConfig,
+        stream: soapysdr::TxStream<c32>,
+        state: State,
+        repeat: usize,
+    ) -> Self {
+        Self {
+            config,
+            stream: Mutex::new(stream),
+            state: Mutex::new(state),
+            repeat,
+            tool_router: Self::tool_router(),
+        }
+    }
+
+    #[tool(description = "List available fan targets, rooms, and commands")]
+    fn list_targets(&self) -> Result<CallToolResult, McpError> {
+        Ok(CallToolResult::success(vec![Content::text(targets_json(
+            &self.config,
+        ))]))
+    }
+
+    #[tool(description = "Send a command to one or more fans")]
+    fn send(
+        &self,
+        Parameters(SendParams { target, command }): Parameters<SendParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let input = format!("{target} {command}");
+        let mut stream = self.stream.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        match execute(&self.config, &mut stream, &mut state, &input, self.repeat) {
+            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "OK: {input}"
+            ))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Error: {e}"
+            ))])),
+        }
+    }
+}
+
+#[tool_handler]
+impl ServerHandler for FanMcp {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+            "Fan controller: send OOK commands to ceiling fans via SDR. \
+                 Use list_targets to see available fans/rooms/commands, \
+                 then send to control them."
+                .to_string(),
+        )
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
     let args = Args::parse();
     let config = load_config(&args.config)?;
     let (_dev, mut stream) = open_sdr(&args)?;
     let mut state = State::load();
 
-    if let Some(addr) = &args.http_server {
-        run_http_server(addr, &config, &mut stream, &mut state, args.repeat)?;
+    if args.mcp {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::from_default_env()
+                    .add_directive(tracing::Level::INFO.into()),
+            )
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .init();
+
+        let service = FanMcp::new(config, stream, state, args.repeat)
+            .serve(rmcp::transport::stdio())
+            .await
+            .context("Failed to start MCP server")?;
+        service.waiting().await?;
     } else if let (Some(target), Some(button)) = (&args.target, &args.button) {
         let cmd = format!("{target} {button}");
         execute(&config, &mut stream, &mut state, &cmd, args.repeat)?;
